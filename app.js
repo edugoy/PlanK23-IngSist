@@ -7,6 +7,47 @@ const STATE = {
   APPROVED: "approved",
 };
 
+const URL_KEY = "malla"; // hash: #malla=...
+
+function encodeStates(states) {
+  // Guardamos solo estados relevantes (no available/locked que se recalculan)
+  // Mapeo corto: i=in_progress, r=regularized, a=approved
+  const map = { [STATE.IN_PROGRESS]:"i", [STATE.REGULARIZED]:"r", [STATE.APPROVED]:"a" };
+  const pairs = Object.entries(states)
+    .filter(([_, st]) => st === STATE.IN_PROGRESS || st === STATE.REGULARIZED || st === STATE.APPROVED)
+    .map(([id, st]) => `${id}:${map[st]}`);
+  return pairs.join(",");
+}
+
+function decodeStates(str) {
+  const out = {};
+  if (!str) return out;
+  const rev = { i: STATE.IN_PROGRESS, r: STATE.REGULARIZED, a: STATE.APPROVED };
+
+  str.split(",").forEach(part => {
+    const [id, code] = part.split(":");
+    if (!id || !rev[code]) return;
+    out[id] = rev[code];
+  });
+  return out;
+}
+
+function readHashStates() {
+  const hash = location.hash || "";
+  const match = hash.match(new RegExp(`${URL_KEY}=([^&]+)`));
+  if (!match) return null;
+  try {
+    return decodeStates(decodeURIComponent(match[1]));
+  } catch {
+    return null;
+  }
+}
+
+function writeHashStates(states) {
+  const encoded = encodeURIComponent(encodeStates(states));
+  location.hash = `${URL_KEY}=${encoded}`;
+}
+
 // Click: available -> in_progress -> regularized -> approved -> available
 const CYCLE = [STATE.AVAILABLE, STATE.IN_PROGRESS, STATE.REGULARIZED, STATE.APPROVED];
 
@@ -193,11 +234,36 @@ function nextState(current) {
 function init() {
   buildGrid();
 
-  let states = loadStates();
+  // 1) Cargar estados: primero desde hash (si existe), si no desde localStorage
+  let states = readHashStates() ?? loadStates();
+
+  // 2) Recalcular materias bloqueadas / disponibles
   states = recomputeAvailability(states);
+
+  // 3) Guardar backup local siempre
   saveStates(states);
+
+  // 4) NO sobrescribir hash si el usuario entró sin hash.
+  //    Solo actualizamos el hash si ya venía usando el modo URL (#malla=...)
+  if (location.hash.includes(`${URL_KEY}=`)) {
+    writeHashStates(states);
+  }
+
+  // 5) Render inicial
   render(states);
 
+  // BONUS: Copiar link actual (si hay hash, lo incluye)
+  copyLinkBtn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(location.href);
+      copyLinkBtn.textContent = "¡Copiado!";
+      setTimeout(() => (copyLinkBtn.textContent = "Copiar link"), 1200);
+    } catch {
+      alert("No pude copiar automáticamente. Copialo manual: " + location.href);
+    }
+  });
+
+  // Click en materias
   grid.addEventListener("click", (e) => {
     const btn = e.target.closest(".subject");
     if (!btn) return;
@@ -205,19 +271,40 @@ function init() {
     const id = btn.dataset.id;
     const current = states[id] || STATE.AVAILABLE;
 
-    if (current === STATE.LOCKED) return; // seguridad extra
+    if (current === STATE.LOCKED) return;
 
+    // Avanza el estado
     states[id] = nextState(current);
+
+    // Recalcula desbloqueos
     states = recomputeAvailability(states);
+
+    // Backup local
     saveStates(states);
+
+    // Si ya estás usando modo URL, sincroniza hash
+    if (location.hash.includes(`${URL_KEY}=`)) {
+      writeHashStates(states);
+    }
+
     render(states);
   });
 
+  // Reset
   resetBtn.addEventListener("click", () => {
     localStorage.removeItem(LS_KEY);
+
     states = {};
     states = recomputeAvailability(states);
+
+    // Backup local
     saveStates(states);
+
+    // Si ya estás usando modo URL, sincroniza hash
+    if (location.hash.includes(`${URL_KEY}=`)) {
+      writeHashStates(states);
+    }
+
     render(states);
   });
 }
